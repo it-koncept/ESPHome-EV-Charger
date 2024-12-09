@@ -1,0 +1,116 @@
+esphome:
+  name: ev_charger
+  platform: ESP32
+  board: esp32dev
+
+logger:
+  level: DEBUG
+
+api:
+
+ota:
+
+wifi:
+  ssid: "Your_SSID"
+  password: "Your_PASSWORD"
+
+# Globale variabler
+globals:
+  - id: current_amp
+    type: int
+    restore_value: true
+    initial_value: "6"
+
+  - id: current_pwm_level
+    type: float
+    restore_value: false
+    initial_value: "0.0"
+
+# Sensorer
+sensor:
+  - platform: template
+    name: "Selected Charging Current"
+    id: selected_current
+    unit_of_measurement: "A"
+    accuracy_decimals: 0
+
+  - platform: adc
+    pin: GPIO36
+    name: "Control Pilot Voltage"
+    id: control_pilot_voltage
+    unit_of_measurement: "V"
+    update_interval: 500ms
+    accuracy_decimals: 2
+    filters:
+      - multiply: 3.3
+
+binary_sensor:
+  - platform: template
+    name: "EV Charger Status"
+    id: ev_charger_status
+    device_class: power
+
+  - platform: template
+    name: "EV Connected"
+    id: ev_connected
+    device_class: connectivity
+    lambda: |-
+      if (id(control_pilot_voltage).state > 2.5) {
+        return true;  // Vehicle connected
+      } else {
+        return false;  // No vehicle connected
+      }
+
+  - platform: template
+    name: "EV Charger Fault"
+    id: ev_charger_fault
+    device_class: problem
+    lambda: |-
+      if (id(charger_relay).state && id(current_pwm_level) == 0.0) {
+        return true;  // Fault detected
+      }
+      return false;  // No fault detected
+
+output:
+  - platform: ledc
+    pin: GPIO25
+    id: cp_pwm
+    frequency: 1000Hz
+
+switch:
+  - platform: gpio
+    pin: GPIO26
+    name: "Charger Relay"
+    id: charger_relay
+    on_turn_on:
+      - lambda: |-
+          id(ev_charger_status).publish_state(true);  // Charging active
+    on_turn_off:
+      - lambda: |-
+          id(ev_charger_status).publish_state(false);  // Charging inactive
+
+select:
+  - platform: template
+    name: "EV Charger Current"
+    id: ev_charger_current
+    optimistic: true
+    options:
+      - "6"
+      - "8"
+      - "10"
+      - "12"
+      - "14"
+      - "16"
+    initial_option: "6"
+    set_action:
+      - lambda: |-
+          int selected = atoi(x.c_str());
+          if (selected >= 6 && selected <= 16 && selected % 2 == 0) {
+            float duty_cycle = selected / 60.0;
+            id(cp_pwm).set_level(duty_cycle);
+            id(current_pwm_level) = duty_cycle;  // Gem det aktuelle niveau
+            id(selected_current).publish_state(selected);
+            ESP_LOGD("set_charging_current", "Set charging current to %d A (duty cycle %.2f)", selected, duty_cycle);
+          } else {
+            ESP_LOGE("set_charging_current", "Invalid current selected: %s", x.c_str());
+          }
